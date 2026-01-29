@@ -63,7 +63,7 @@ fromList xs =
 
 -- Uniform over a range (for Enum types like Int)
 uniform' :: Rational -> Rational -> Dist Rational
-uniform' a b = fromList [a, (a + 0.1) .. b]
+uniform' a b = fromList [a, (a + 0.01) .. b]
 
 -- Evaluate CDF at a specific value: P(X <= x)
 cdfAt :: Ord a => a -> Dist a -> Rational
