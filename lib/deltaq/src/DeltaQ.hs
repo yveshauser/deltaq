@@ -44,14 +44,14 @@ module DeltaQ
     , module DeltaQ.Diagram
     , module DeltaQ.Methods
     , module DeltaQ.Plot
-    , module DeltaQ.PiecewisePolynomial
+    , module DeltaQ.Sampled
     ) where
 
 import DeltaQ.Class
 import DeltaQ.Expr
 import DeltaQ.Diagram
 import DeltaQ.Methods
-import DeltaQ.PiecewisePolynomial
+import DeltaQ.Sampled
 import DeltaQ.Plot
 
 {-$example

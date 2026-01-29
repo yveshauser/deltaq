@@ -22,8 +22,8 @@ import DeltaQ.Class (
   ProbabilisticOutcome (..),
  )
 
-type PMF a = [(a, Double)] -- (value, probability)
-type CDF a = [(a, Double)] -- (value, cumulative probability)
+type PMF a = [(a, Rational)] -- (value, probability)
+type CDF a = [(a, Rational)] -- (value, cumulative probability)
 
 -- Probability distribution, PMF & CDF
 data Dist a = Dist
@@ -40,7 +40,7 @@ fromPMF f =
    in Dist{..}
 
 -- Quantile function
-quantile' :: Double -> Dist a -> Maybe a
+quantile' :: Rational -> Dist a -> Maybe a
 quantile' p Dist{..} = fmap fst $ find (\(_, cp) -> cp >= p) cdf
  where
   find x = listToMaybe . filter x
@@ -62,11 +62,11 @@ fromList xs =
    in fromPMF m
 
 -- Uniform over a range (for Enum types like Int)
-uniform' :: Double -> Double -> Dist Double
+uniform' :: Rational -> Rational -> Dist Rational
 uniform' a b = fromList [a, (a + 0.1) .. b]
 
 -- Evaluate CDF at a specific value: P(X <= x)
-cdfAt :: Ord a => a -> Dist a -> Double
+cdfAt :: Ord a => a -> Dist a -> Rational
 cdfAt x Dist{..} =
   case filter (\(v, _) -> v <= x) cdf of
     [] -> 0.0
@@ -87,7 +87,7 @@ minCDF d1 d2 =
       pmf' = zipWith (\(v, cp) prev_cp -> (v, cp - prev_cp)) cdf' (0.0 : map snd cdf')
    in fromPMF pmf'
 
-mixture' :: Ord a => Double -> Double -> Dist a -> Dist a -> Dist a
+mixture' :: Ord a => Rational -> Rational -> Dist a -> Dist a -> Dist a
 mixture' threshold w d1 d2
   | w < 0 || w > 1 = error "Weight must be between 0 and 1"
   | otherwise =
@@ -108,14 +108,14 @@ mixture' threshold w d1 d2
        in
         fromPMF (Map.toList normalized)
 
-mixture :: Ord a => Double -> Dist a -> Dist a -> Dist a
+mixture :: Ord a => Rational -> Dist a -> Dist a -> Dist a
 mixture = mixture' 0.01
 
-data DQ = DQ (Dist Double)
+data DQ = DQ (Dist Rational)
   deriving (Show)
 
 instance Outcome DQ where
-  type Duration DQ = Double
+  type Duration DQ = Rational
 
   never = DQ (Dist [] [])
 
@@ -128,7 +128,7 @@ instance Outcome DQ where
   lastToFinish (DQ a) (DQ b) = DQ $ maxCDF a b
 
 instance ProbabilisticOutcome DQ where
-  type Probability DQ = Double
+  type Probability DQ = Rational
 
   choice p (DQ a) (DQ b) = DQ $ mixture p a b
 

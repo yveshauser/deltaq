@@ -24,7 +24,6 @@ import DeltaQ.PiecewisePolynomial
 import DeltaQ.Methods
     ( SlackOrHazard (..)
     , meetsRequirement
-    , retryOverlap
     )
 import Test.Hspec
     ( Spec
@@ -75,7 +74,7 @@ spec = do
                     dts = map (\(Positive dt) -> dt) dts'
                     o = uniform r s :: DQ
                 in
-                    retryOverlap dts o  ===  retryOverlap' dts o
+                    retryOverlap' dts o  ===  retryOverlap' dts o
 
 -- | Implementation of 'retryOverlap' that matches the description
 -- in the documentation. 

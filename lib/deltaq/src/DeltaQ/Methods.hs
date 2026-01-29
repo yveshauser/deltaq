@@ -17,10 +17,10 @@ module DeltaQ.Methods
     , SlackOrHazard (..)
     , isSlack
     , isHazard
-    
+
     -- * Timeouts
-    , retryOverlapN
-    , retryOverlap
+    -- , retryOverlapN
+    -- , retryOverlap
     ) where
 
 import DeltaQ.Class
@@ -29,10 +29,6 @@ import DeltaQ.Class
     , Outcome (..)
     , ProbabilisticOutcome (..)
     , eventually
-    )
-import DeltaQ.PiecewisePolynomial
-    ( DQ
-    , timeout
     )
 
 {-----------------------------------------------------------------------------
@@ -108,8 +104,8 @@ meetsRequirement o (t,p)
 --
 -- If no copy succeeds within total time @n * dt@,
 -- the whole outcome fails.
-retryOverlapN :: Int -> Duration DQ -> DQ -> DQ
-retryOverlapN n dt = retryOverlap (replicate n dt)
+-- retryOverlapN :: Int -> Duration DQ -> DQ -> DQ
+-- retryOverlapN n dt = retryOverlap (replicate n dt)
 
 -- | Retry an outcome multiple times, take the first instance that succeeds.
 --
@@ -123,14 +119,14 @@ retryOverlapN n dt = retryOverlap (replicate n dt)
 --
 -- If no copy succeeds within total time @sum dts@,
 -- the whole outcome fails.
-retryOverlap :: [Duration DQ] -> DQ -> DQ
-retryOverlap dts0 o = go dts0 o
-  where
-    go [] _ = never
-    go (dt:dts) race =
-        choice p before (wait dt .>>. retry)
-      where
-        (before, p, after) = timeout dt race
-
-        -- add another copy of `o` to the race
-        retry = go dts (after .\/. o)
+-- retryOverlap :: [Duration DQ] -> DQ -> DQ
+-- retryOverlap dts0 o = go dts0 o
+--   where
+--     go [] _ = never
+--     go (dt:dts) race =
+--         choice p before (wait dt .>>. retry)
+--       where
+--         (before, p, after) = timeout dt race
+--
+--         -- add another copy of `o` to the race
+--         retry = go dts (after .\/. o)

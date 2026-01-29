@@ -52,15 +52,12 @@ import Control.Monad
 import Control.DeepSeq
     ( NFData
     )
-import Data.List
-    ( foldl'
-    )
 import DeltaQ.Class
     ( Outcome (..)
     , DeltaQ (..)
     , ProbabilisticOutcome (..)
     )
-import DeltaQ.PiecewisePolynomial
+import DeltaQ.Sampled
     ( DQ
     )
 import GHC.Generics
