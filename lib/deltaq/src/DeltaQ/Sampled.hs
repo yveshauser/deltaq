@@ -11,7 +11,7 @@ module DeltaQ.Sampled
     ) where
 
 import Data.Function (on)
-import Data.List (groupBy, sortBy)
+import Data.List (groupBy, sortBy, union)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import Data.Ord (comparing)
@@ -50,7 +50,7 @@ convolve :: (Ord a, Num a) => Dist a -> Dist a -> Dist a
 convolve d1 d2 =
     let products = [(x + y, p1 * p2) | (x, p1) <- pmf d1, (y, p2) <- pmf d2]
         grouped = groupBy ((==) `on` fst) $ sortBy (comparing fst) products
-        combined = [(v, sum [p | (_, p) <- grp]) | grp@((v, _) : _) <- grouped]
+        combined = [(v, sum [p | (_, p) <- g]) | g@((v, _) : _) <- grouped]
     in  fromPMF combined
 
 -- Uniform over a list of values
@@ -74,24 +74,30 @@ cdfAt x Dist{..} =
         [] -> 0.0
         ps -> snd $ last ps -- the cumulative probability at largest value <= x
 
--- for max: F₁(x)F₂(x)
-maxCDF :: Ord a => Dist a -> Dist a -> Dist a
-maxCDF d1 d2 =
-    let values = Map.keys $ Map.union (Map.fromList $ cdf d1) (Map.fromList $ cdf d2)
-        cdf' = sortBy (comparing fst) [(x, cdfAt x d1 * cdfAt x d2) | x <- values]
+-- Last to finish: F₁(x)F₂(x)
+lastToFinish' :: Ord a => Dist a -> Dist a -> Dist a
+lastToFinish' d1 d2 =
+    let values = union (map fst (cdf d1)) (map fst (cdf d2))
+        cdf' = sortBy (comparing fst) [(v, cdfAt v d1 * cdfAt v d2) | v <- values]
         pmf' = zipWith (\(v, p) p' -> (v, p - p')) cdf' (0.0 : map snd cdf')
-    in  fromPMF pmf'
+    in  Dist
+            { cdf = cdf'
+            , pmf = pmf'
+            }
 
--- for min: 1 - (1 - F₁(x))(1 - F₂(x))
-minCDF :: Ord a => Dist a -> Dist a -> Dist a
-minCDF d1 d2 =
-    let values = Map.keys $ Map.union (Map.fromList $ cdf d1) (Map.fromList $ cdf d2)
+-- First to finish: 1 - (1 - F₁(x))(1 - F₂(x))
+firstToFinish' :: Ord a => Dist a -> Dist a -> Dist a
+firstToFinish' d1 d2 =
+    let values = union (map fst (cdf d1)) (map fst (cdf d2))
         cdf' =
             sortBy
                 (comparing fst)
-                [(x, 1 - (1 - cdfAt x d1) * (1 - cdfAt x d2)) | x <- values]
+                [(v, 1 - (1 - cdfAt v d1) * (1 - cdfAt v d2)) | v <- values]
         pmf' = zipWith (\(v, p) p' -> (v, p - p')) cdf' (0.0 : map snd cdf')
-    in  fromPMF pmf'
+    in  Dist
+            { cdf = cdf'
+            , pmf = pmf'
+            }
 
 -- Mixture distribution, dropping values with a probability below the treshold
 mixture' :: Ord a => Rational -> Rational -> Dist a -> Dist a -> Dist a
@@ -117,8 +123,8 @@ mixture' t w d1 d2
 
 mixture :: Ord a => Rational -> Dist a -> Dist a -> Dist a
 mixture = mixture' threshold
-    where
-      threshold = 0.01
+  where
+    threshold = 0.01
 
 data DQ = DQ (Dist Rational)
     deriving (Show)
@@ -132,9 +138,9 @@ instance Outcome DQ where
 
     sequentially (DQ a) (DQ b) = DQ $ convolve a b
 
-    firstToFinish (DQ a) (DQ b) = DQ $ minCDF a b
+    firstToFinish (DQ a) (DQ b) = DQ $ firstToFinish' a b
 
-    lastToFinish (DQ a) (DQ b) = DQ $ maxCDF a b
+    lastToFinish (DQ a) (DQ b) = DQ $ lastToFinish' a b
 
 instance ProbabilisticOutcome DQ where
     type Probability DQ = Rational
