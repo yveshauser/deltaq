@@ -39,6 +39,12 @@ fromPMF f =
         cdf = scanl1 (\(_, p') (v, p) -> (v, p' + p)) pmf
     in  Dist{..}
 
+-- Create distribution from CDF
+fromCDF :: Ord a => CDF a -> Dist a
+fromCDF cdf =
+    let pmf = zipWith (\(v, p) p' -> (v, p - p')) cdf (0.0 : map snd cdf)
+    in  Dist{..}
+
 -- Quantile function
 quantile' :: Rational -> Dist a -> Maybe a
 quantile' q Dist{..} = fmap fst $ find (\(_, p) -> p >= q) cdf
@@ -79,11 +85,7 @@ lastToFinish' :: Ord a => Dist a -> Dist a -> Dist a
 lastToFinish' d1 d2 =
     let values = union (map fst (cdf d1)) (map fst (cdf d2))
         cdf' = sortBy (comparing fst) [(v, cdfAt v d1 * cdfAt v d2) | v <- values]
-        pmf' = zipWith (\(v, p) p' -> (v, p - p')) cdf' (0.0 : map snd cdf')
-    in  Dist
-            { cdf = cdf'
-            , pmf = pmf'
-            }
+    in  fromCDF cdf'
 
 -- First to finish: 1 - (1 - F₁(x))(1 - F₂(x))
 firstToFinish' :: Ord a => Dist a -> Dist a -> Dist a
@@ -93,11 +95,7 @@ firstToFinish' d1 d2 =
             sortBy
                 (comparing fst)
                 [(v, 1 - (1 - cdfAt v d1) * (1 - cdfAt v d2)) | v <- values]
-        pmf' = zipWith (\(v, p) p' -> (v, p - p')) cdf' (0.0 : map snd cdf')
-    in  Dist
-            { cdf = cdf'
-            , pmf = pmf'
-            }
+    in  fromCDF cdf'
 
 -- Mixture distribution, dropping values with a probability below the treshold
 mixture' :: Ord a => Rational -> Rational -> Dist a -> Dist a -> Dist a
