@@ -197,7 +197,7 @@ plotInverseCDFs
 plotInverseCDFs title namedOutcomes = G.execEC $ do
     G.layout_title .= title
     add_x_axis (map snd namedOutcomes)
-    G.layout_y_axis . G.laxis_title .= "Log Inverse Cumulative Probabilty"
+    G.layout_y_axis . G.laxis_title .= "Log Inverse Cumulative Probability"
     mapM_ plotOne namedOutcomes
   where
     cv1 = fromRational . toRational
@@ -222,7 +222,7 @@ plotInverseCDFWithQuantiles
 plotInverseCDFWithQuantiles title quantiles o = G.execEC $ do
     G.layout_title .= title
     add_x_axis [o]
-    G.layout_y_axis . G.laxis_title .= "Log Inverse Cumulative Probabilty"
+    G.layout_y_axis . G.laxis_title .= "Log Inverse Cumulative Probability"
     G.plot $ G.line "" [[(cv1 a, 1 - cv2 b) | (a, b) <- toXY o]]
     mapM_ plotQuantile quantiles
   where

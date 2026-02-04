@@ -96,7 +96,7 @@ firstToFinish' d1 d2 =
                 [(v, 1 - (1 - cdfAt v d1) * (1 - cdfAt v d2)) | v <- values]
     in  fromCDF cdf'
 
--- Mixture distribution, dropping values with a probability below the treshold
+-- Mixture distribution, dropping values with a probability below the threshold
 mixture' :: Ord a => Rational -> Rational -> Dist a -> Dist a -> Dist a
 mixture' t w d1 d2
     | w < 0 || w > 1 = error "Weight must be between 0 and 1"
