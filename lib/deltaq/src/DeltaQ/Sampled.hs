@@ -12,7 +12,6 @@ module DeltaQ.Sampled
 
 import Data.Function (on)
 import Data.List (groupBy, sortBy, union)
-import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import Data.Ord (comparing)
 import DeltaQ.Class
@@ -102,22 +101,14 @@ mixture' :: Ord a => Rational -> Rational -> Dist a -> Dist a -> Dist a
 mixture' t w d1 d2
     | w < 0 || w > 1 = error "Weight must be between 0 and 1"
     | otherwise =
-        let
-            weighted = Map.fromList [(x, w * p) | (x, p) <- pmf d1, w * p >= t]
-            resultMap =
-                foldl'
-                    ( \m (v, p) ->
-                        let !q = (1 - w) * p
-                        in  if q >= t
-                                then Map.insertWith (+) v q m
-                                else m
-                    )
-                    weighted
-                    (pmf d2)
-            total = Map.foldl' (+) 0 resultMap
-            normalized = Map.map (/ total) resultMap
-        in
-            fromPMF (Map.toList normalized)
+        let pmf1' = [(x, w * p) | (x, p) <- pmf d1, w * p >= t]
+            pmf2' = [(x, (1 - w) * p) | (x, p) <- pmf d2, (1 - w) * p >= t]
+            combined = pmf1' ++ pmf2'
+            grouped = groupBy ((==) `on` fst) $ sortBy (comparing fst) combined
+            merged = [(v, sum [p | (_, p) <- g]) | g@((v, _) : _) <- grouped]
+            total = sum $ map snd merged
+            normalized = map (\(v, p) -> (v, p / total)) merged
+        in  fromPMF normalized
 
 mixture :: Ord a => Rational -> Dist a -> Dist a -> Dist a
 mixture = mixture' threshold
