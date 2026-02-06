@@ -14,7 +14,6 @@ import Control.Monad.ST (runST)
 import qualified Data.Vector.Algorithms.Intro as VA
 import Data.Vector.Unboxed (Vector)
 import qualified Data.Vector.Unboxed as VU
-import qualified Data.Vector.Unboxed.Mutable as VUM
 import DeltaQ.Class
     ( DeltaQ (..)
     , Outcome (..)
@@ -22,12 +21,10 @@ import DeltaQ.Class
     , eventuallyFromMaybe
     )
 
--- Maximum number of points to keep in a distribution
 maxDistributionSize :: Int
-maxDistributionSize = 10000
+maxDistributionSize = 1000
 
--- Using unboxed vectors for maximum performance
--- Sorted by value for binary search
+-- A probability distribution
 data Dist = Dist
     { values :: !(Vector Double) -- sorted values
     , probabilities :: !(Vector Double) -- corresponding probabilities (PMF)
@@ -38,7 +35,7 @@ data Dist = Dist
 emptyDist :: Dist
 emptyDist = Dist VU.empty VU.empty VU.empty
 
--- Create distribution from value-probability pairs with automatic size limiting
+-- Create distribution from (value, probability) pairs
 fromPairs :: [(Double, Double)] -> Dist
 fromPairs pairs
     | null pairs = emptyDist
@@ -46,7 +43,7 @@ fromPairs pairs
         let sorted = sort pairs
             final =
                 if VU.length sorted > maxDistributionSize
-                    then coalesceToSize maxDistributionSize sorted
+                    then importanceSample maxDistributionSize sorted
                     else sorted
             values = VU.map fst final
             probabilities = VU.map snd final
@@ -60,41 +57,6 @@ fromPairs pairs
         VA.sortBy (\(v1, _) (v2, _) -> compare v1 v2) mvec
         sorted <- VU.unsafeFreeze mvec
         return sorted
-
--- Coalesce distribution to target size by merging nearby points
--- Uses adaptive binning based on probability density
-coalesceToSize :: Int -> Vector (Double, Double) -> Vector (Double, Double)
-coalesceToSize targetSize vec
-    | VU.length vec <= targetSize = vec
-    | targetSize <= 0 = VU.empty
-    | otherwise = runST $ do
-        -- Calculate how many points to merge into each bin
-        let n = VU.length vec
-            binSize = (n + targetSize - 1) `div` targetSize
-
-        -- Create result vector
-        result <- VUM.new targetSize
-
-        -- Merge points into bins
-        let fillBins !outIdx !inIdx
-                | outIdx >= targetSize = return outIdx
-                | inIdx >= n = return outIdx
-                | otherwise = do
-                    let endIdx = min n (inIdx + binSize)
-                        binPoints = VU.slice inIdx (endIdx - inIdx) vec
-                        merged = mergeBin binPoints
-                    VUM.write result outIdx merged
-                    fillBins (outIdx + 1) endIdx
-
-        finalSize <- fillBins 0 0
-        VU.unsafeFreeze (VUM.take finalSize result)
-  where
-    mergeBin :: Vector (Double, Double) -> (Double, Double)
-    mergeBin bin =
-        let !totalProb = VU.sum (VU.map snd bin)
-            !weightedSum = VU.sum (VU.zipWith (\(v, p) _ -> v * p) bin bin)
-            !avgValue = weightedSum / totalProb
-        in  (avgValue, totalProb)
 
 -- Keep high probability values
 importanceSample :: Int -> Vector (Double, Double) -> Vector (Double, Double)
