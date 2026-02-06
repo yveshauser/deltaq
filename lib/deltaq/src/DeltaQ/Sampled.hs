@@ -10,10 +10,11 @@ module DeltaQ.Sampled
       DQ
     ) where
 
-import Data.Function (on)
-import Data.List (groupBy, sortBy, union)
-import Data.Maybe (listToMaybe)
-import Data.Ord (comparing)
+import Control.Monad.ST (runST)
+import qualified Data.Vector.Algorithms.Intro as VA
+import Data.Vector.Unboxed (Vector)
+import qualified Data.Vector.Unboxed as VU
+import qualified Data.Vector.Unboxed.Mutable as VUM
 import DeltaQ.Class
     ( DeltaQ (..)
     , Outcome (..)
@@ -21,109 +22,251 @@ import DeltaQ.Class
     , eventuallyFromMaybe
     )
 
-type PMF a = [(a, Rational)] -- (value, probability)
-type CDF a = [(a, Rational)] -- (value, cumulative probability)
+-- Maximum number of points to keep in a distribution
+maxDistributionSize :: Int
+maxDistributionSize = 10000
 
--- Probability distribution, PMF & CDF
-data Dist a = Dist
-    { pmf :: !(PMF a)
-    , cdf :: !(CDF a)
+-- Using unboxed vectors for maximum performance
+-- Sorted by value for binary search
+data Dist = Dist
+    { values :: !(Vector Double) -- sorted values
+    , probabilities :: !(Vector Double) -- corresponding probabilities (PMF)
+    , cumulative :: !(Vector Double) -- cumulative probabilities (CDF)
     }
     deriving (Show)
 
--- Create distribution from PMF
-fromPMF :: Ord a => PMF a -> Dist a
-fromPMF f =
-    let pmf = sortBy (comparing fst) f
-        cdf = scanl1 (\(_, p') (v, p) -> (v, p' + p)) pmf
-    in  Dist{..}
+emptyDist :: Dist
+emptyDist = Dist VU.empty VU.empty VU.empty
 
--- Create distribution from CDF
-fromCDF :: Ord a => CDF a -> Dist a
-fromCDF cdf =
-    let pmf = zipWith (\(v, p) p' -> (v, p - p')) cdf (0.0 : map snd cdf)
-    in  Dist{..}
+-- Create distribution from value-probability pairs with automatic size limiting
+fromPairs :: [(Double, Double)] -> Dist
+fromPairs pairs
+    | null pairs = emptyDist
+    | otherwise =
+        let sorted = sort pairs
+            final =
+                if VU.length sorted > maxDistributionSize
+                    then coalesceToSize maxDistributionSize sorted
+                    else sorted
+            values = VU.map fst final
+            probabilities = VU.map snd final
+            cumulative = VU.scanl1' (+) probabilities
+        in  Dist{..}
+  where
+    sort :: [(Double, Double)] -> Vector (Double, Double)
+    sort xs = runST $ do
+        let vec = VU.fromList xs
+        mvec <- VU.thaw vec
+        VA.sortBy (\(v1, _) (v2, _) -> compare v1 v2) mvec
+        sorted <- VU.unsafeFreeze mvec
+        return sorted
+
+-- Coalesce distribution to target size by merging nearby points
+-- Uses adaptive binning based on probability density
+coalesceToSize :: Int -> Vector (Double, Double) -> Vector (Double, Double)
+coalesceToSize targetSize vec
+    | VU.length vec <= targetSize = vec
+    | targetSize <= 0 = VU.empty
+    | otherwise = runST $ do
+        -- Calculate how many points to merge into each bin
+        let n = VU.length vec
+            binSize = (n + targetSize - 1) `div` targetSize
+
+        -- Create result vector
+        result <- VUM.new targetSize
+
+        -- Merge points into bins
+        let fillBins !outIdx !inIdx
+                | outIdx >= targetSize = return outIdx
+                | inIdx >= n = return outIdx
+                | otherwise = do
+                    let endIdx = min n (inIdx + binSize)
+                        binPoints = VU.slice inIdx (endIdx - inIdx) vec
+                        merged = mergeBin binPoints
+                    VUM.write result outIdx merged
+                    fillBins (outIdx + 1) endIdx
+
+        finalSize <- fillBins 0 0
+        VU.unsafeFreeze (VUM.take finalSize result)
+  where
+    mergeBin :: Vector (Double, Double) -> (Double, Double)
+    mergeBin bin =
+        let !totalProb = VU.sum (VU.map snd bin)
+            !weightedSum = VU.sum (VU.zipWith (\(v, p) _ -> v * p) bin bin)
+            !avgValue = weightedSum / totalProb
+        in  (avgValue, totalProb)
+
+-- Keep high probability values
+importanceSample :: Int -> Vector (Double, Double) -> Vector (Double, Double)
+importanceSample targetSize vec
+    | VU.length vec <= targetSize = vec
+    | otherwise =
+        let sorted = runST $ do
+                mvec <- VU.thaw vec
+                VA.sortBy (\(_, p1) (_, p2) -> compare p2 p1) mvec
+                VU.unsafeFreeze mvec
+            (important, _) = VU.foldl' takeUntilThreshold (VU.empty, 0.0) sorted
+        in  if VU.length important > targetSize
+                then VU.take targetSize important
+                else important
+  where
+    threshold = 0.95
+    takeUntilThreshold (acc, !cumProb) point@(_, p)
+        | cumProb >= threshold = (acc, cumProb)
+        | otherwise = (VU.snoc acc point, cumProb + p)
+
+-- Binary search for index where value <= x
+binarySearchLE :: Double -> Vector Double -> Maybe Int
+binarySearchLE x vec
+    | VU.null vec = Nothing
+    | otherwise = go 0 (VU.length vec - 1)
+  where
+    go !lo !hi
+        | lo > hi = if lo == 0 then Nothing else Just (lo - 1)
+        | otherwise =
+            let !mid = (lo + hi) `div` 2
+                !midVal = VU.unsafeIndex vec mid
+            in  if midVal <= x
+                    then
+                        if mid == VU.length vec - 1 || VU.unsafeIndex vec (mid + 1) > x
+                            then Just mid
+                            else go (mid + 1) hi
+                    else go lo (mid - 1)
+
+-- Evaluate CDF at a specific value: P(X <= x)
+cdfAt :: Double -> Dist -> Double
+cdfAt x Dist{..} =
+    case binarySearchLE x values of
+        Nothing -> 0.0
+        Just idx -> VU.unsafeIndex cumulative idx
 
 -- Quantile function
-quantile' :: Rational -> Dist a -> Maybe a
-quantile' q Dist{..} = fmap fst $ find (\(_, p) -> p >= q) cdf
-  where
-    find x = listToMaybe . filter x
+quantile' :: Double -> Dist -> Maybe Double
+quantile' q Dist{..} =
+    case VU.findIndex (>= q) cumulative of
+        Nothing -> Nothing
+        Just idx -> Just (VU.unsafeIndex values idx)
 
 -- Convolve two distributions
-convolve :: (Ord a, Num a) => Dist a -> Dist a -> Dist a
+convolve :: Dist -> Dist -> Dist
 convolve d1 d2 =
-    let products = [(x + y, p1 * p2) | (x, p1) <- pmf d1, (y, p2) <- pmf d2]
-        grouped = groupBy ((==) `on` fst) $ sortBy (comparing fst) products
-        combined = [(v, sum [p | (_, p) <- g]) | g@((v, _) : _) <- grouped]
-    in  fromPMF combined
+    let n1 = VU.length (values d1)
+        n2 = VU.length (values d2)
+        totalPoints = n1 * n2
+    in  if totalPoints <= maxDistributionSize
+            then convolveExact d1 d2
+            else convolveSampled d1 d2
+
+-- Exact convolution
+convolveExact :: Dist -> Dist -> Dist
+convolveExact d1 d2 =
+    let products =
+            [ ( VU.unsafeIndex (values d1) i + VU.unsafeIndex (values d2) j
+              , VU.unsafeIndex (probabilities d1) i * VU.unsafeIndex (probabilities d2) j
+              )
+            | i <- [0 .. VU.length (values d1) - 1]
+            , j <- [0 .. VU.length (values d2) - 1]
+            ]
+    in  fromPairs products
+
+-- Sampled convolution
+convolveSampled :: Dist -> Dist -> Dist
+convolveSampled d1 d2 =
+    let n1 = VU.length (values d1)
+        n2 = VU.length (values d2)
+        sampleSize = floor (sqrt (fromIntegral maxDistributionSize :: Double))
+        sampled1 = if n1 > sampleSize then sampleDist sampleSize d1 else d1
+        sampled2 = if n2 > sampleSize then sampleDist sampleSize d2 else d2
+    in  convolveExact sampled1 sampled2
+
+-- Sample distribution
+sampleDist :: Int -> Dist -> Dist
+sampleDist n Dist{..} =
+    let pairs = VU.zip values probabilities
+        sampled = importanceSample n pairs
+        probs = VU.map snd sampled
+        total = VU.sum probs
+        normalized = VU.map (/ total) probs
+    in  Dist
+            { values = VU.map fst sampled
+            , probabilities = normalized
+            , cumulative = VU.scanl1' (+) normalized
+            }
 
 -- Uniform over a list of values
-fromList :: Ord a => [a] -> Dist a
+fromList :: [Double] -> Dist
 fromList xs =
-    let n = length xs
-        p = 1.0 / fromIntegral n
-        m = [(x, p) | x <- xs]
-    in  fromPMF m
+    let !n = length xs
+        !p = 1.0 / fromIntegral n
+    in  fromPairs [(x, p) | x <- xs]
 
 -- Uniform over a range with constant step size
-uniform' :: Rational -> Rational -> Dist Rational
+uniform' :: Double -> Double -> Dist
 uniform' a b = fromList [a, (a + stepSize) .. b]
   where
     stepSize = 0.01
 
--- Evaluate CDF at a specific value: P(X <= x)
-cdfAt :: Ord a => a -> Dist a -> Rational
-cdfAt x Dist{..} =
-    case filter (\(v, _) -> v <= x) cdf of
-        [] -> 0.0
-        ps -> snd $ last ps -- the cumulative probability at largest value <= x
+-- Get all unique values from both distributions (sampled if too large)
+unionValues :: Dist -> Dist -> [Double]
+unionValues d1 d2 =
+    let v1 = VU.toList (values d1)
+        v2 = VU.toList (values d2)
+    in  mergeUnique v1 v2
+  where
+    mergeUnique [] ys = ys
+    mergeUnique xs [] = xs
+    mergeUnique (x : xs) (y : ys)
+        | x < y = x : mergeUnique xs (y : ys)
+        | x > y = y : mergeUnique (x : xs) ys
+        | otherwise = x : mergeUnique xs ys
+
+-- Build a distribution from the CDF
+fromCDF :: [(Double, Double)] -> Dist
+fromCDF [] = emptyDist
+fromCDF pairs@((v0, p0) : rest) =
+    let pmfPairs = (v0, p0) : zipWith (\(v, p) (_, p') -> (v, p - p')) rest pairs
+    in  fromPairs pmfPairs
 
 -- Last to finish: F₁(x)F₂(x)
-lastToFinish' :: Ord a => Dist a -> Dist a -> Dist a
+lastToFinish' :: Dist -> Dist -> Dist
 lastToFinish' d1 d2 =
-    let values = union (map fst (cdf d1)) (map fst (cdf d2))
-        cdf' = sortBy (comparing fst) [(v, cdfAt v d1 * cdfAt v d2) | v <- values]
-    in  fromCDF cdf'
+    let vals = unionValues d1 d2
+        pairs = [(v, cdfAt v d1 * cdfAt v d2) | v <- vals]
+    in  fromCDF pairs
 
 -- First to finish: 1 - (1 - F₁(x))(1 - F₂(x))
-firstToFinish' :: Ord a => Dist a -> Dist a -> Dist a
+firstToFinish' :: Dist -> Dist -> Dist
 firstToFinish' d1 d2 =
-    let values = union (map fst (cdf d1)) (map fst (cdf d2))
-        cdf' =
-            sortBy
-                (comparing fst)
-                [(v, 1 - (1 - cdfAt v d1) * (1 - cdfAt v d2)) | v <- values]
-    in  fromCDF cdf'
+    let vals = unionValues d1 d2
+        pairs = [(v, 1 - (1 - cdfAt v d1) * (1 - cdfAt v d2)) | v <- vals]
+    in  fromCDF pairs
 
--- Mixture distribution, dropping values with a probability below the threshold
-mixture' :: Ord a => Rational -> Rational -> Dist a -> Dist a -> Dist a
-mixture' t w d1 d2
+-- Mixture distribution
+mixture :: Double -> Dist -> Dist -> Dist
+mixture w d1 d2
     | w < 0 || w > 1 = error "Weight must be between 0 and 1"
     | otherwise =
-        let pmf1' = [(x, w * p) | (x, p) <- pmf d1, w * p >= t]
-            pmf2' = [(x, (1 - w) * p) | (x, p) <- pmf d2, (1 - w) * p >= t]
-            combined = pmf1' ++ pmf2'
-            grouped = groupBy ((==) `on` fst) $ sortBy (comparing fst) combined
-            merged = [(v, sum [p | (_, p) <- g]) | g@((v, _) : _) <- grouped]
-            total = sum $ map snd merged
-            normalized = map (\(v, p) -> (v, p / total)) merged
-        in  fromPMF normalized
+        let n1 = VU.length (values d1)
+            n2 = VU.length (values d2)
+            pairs1 =
+                [ (VU.unsafeIndex (values d1) i, w * VU.unsafeIndex (probabilities d1) i)
+                | i <- [0 .. n1 - 1]
+                ]
+            pairs2 =
+                [ (VU.unsafeIndex (values d2) i, (1 - w) * VU.unsafeIndex (probabilities d2) i)
+                | i <- [0 .. n2 - 1]
+                ]
+        in  fromPairs (pairs1 ++ pairs2)
 
-mixture :: Ord a => Rational -> Dist a -> Dist a -> Dist a
-mixture = mixture' threshold
-  where
-    threshold = 0.01
-
-data DQ = DQ (Dist Rational)
+data DQ = DQ Dist
     deriving (Show)
 
 instance Outcome DQ where
-    type Duration DQ = Rational
+    type Duration DQ = Double
 
-    never = DQ (Dist [] [])
+    never = DQ emptyDist
 
-    wait t = DQ (Dist [(t, 1)] [(t, 1)])
+    wait t = DQ (fromPairs [(t, 1.0)])
 
     sequentially (DQ a) (DQ b) = DQ $ convolve a b
 
@@ -132,7 +275,7 @@ instance Outcome DQ where
     lastToFinish (DQ a) (DQ b) = DQ $ lastToFinish' a b
 
 instance ProbabilisticOutcome DQ where
-    type Probability DQ = Rational
+    type Probability DQ = Double
 
     choice p (DQ a) (DQ b) = DQ $ mixture p a b
 
@@ -141,19 +284,19 @@ instance DeltaQ DQ where
 
     successWithin (DQ l) d = cdfAt d l
 
-    failure (DQ (Dist _ l)) =
-        case reverse l of
-            ((_, p) : _) -> 1.0 - p
-            [] -> 1.0
+    failure (DQ (Dist _ _ cum)) =
+        if VU.null cum
+            then 1.0
+            else 1.0 - VU.last cum
 
     quantile (DQ l) p =
         eventuallyFromMaybe
             $ quantile' p l
 
-    earliest (DQ (Dist _ l)) =
+    earliest (DQ (Dist vals _ _)) =
         eventuallyFromMaybe
-            $ fst <$> listToMaybe l
+            $ if VU.null vals then Nothing else Just (VU.head vals)
 
-    deadline (DQ (Dist _ l)) =
+    deadline (DQ (Dist vals _ _)) =
         eventuallyFromMaybe
-            $ fst <$> listToMaybe (reverse l)
+            $ if VU.null vals then Nothing else Just (VU.last vals)

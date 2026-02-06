@@ -115,7 +115,7 @@ toDeltaQ f (O term) = go term
 
 -- | Outcome expressions can be combined sequentially and in parallel.
 instance Outcome O where
-    type Duration O = Rational
+    type Duration O = Double
 
     never = O Never
     wait = O . Wait
@@ -125,7 +125,7 @@ instance Outcome O where
 
 -- | Outcome expressions can be combined with random choice.
 instance ProbabilisticOutcome O where
-    type Probability O = Rational
+    type Probability O = Double
 
     choice p (O x) (O y) = O $ Choices [(p, x), (1-p, y)]
     choices wos = O $ Choices [ (w, x) | (w, O x) <- wos ]
@@ -144,9 +144,9 @@ data Term v
     | Wait0
         -- ^ Succeed immediately. Equivalent to @Wait 0@,
         -- but with a straight line as graphical representation.
-    | Wait Rational
+    | Wait Double
         -- ^ Succeed after waiting for a fixed amount of time.
-    | Uniform Rational Rational
+    | Uniform Double Double
         -- ^ @Uniform l r@ succeeds after an amount of time randomly drawn
         -- from a uniform probability distribution on the interval $[l,r]$.
     | Loc String
@@ -159,7 +159,7 @@ data Term v
         -- ^ Parallel composition, last to finish.
     | First [Term v]
         -- ^ Parallel composiiton, first to finish.
-    | Choices [(Rational, Term v)]
+    | Choices [(Double, Term v)]
         -- ^ Probabilistic choice.
         -- The probabilities are proportional to the given weights.
     deriving (Show, Eq, Ord, Generic, Functor, NFData)
