@@ -21,9 +21,9 @@ import DeltaQ.Class
     , eventuallyFromMaybe
     )
 
--- Max size of a distribution
+-- Max size of a distribution (see also stepSize below)
 maxDistributionSize :: Int
-maxDistributionSize = 1000
+maxDistributionSize = 10000
 
 -- A probability distribution
 data Dist = Dist
@@ -46,7 +46,7 @@ fromPairs pairs
         let sorted = sort pairs
             sampled =
                 if VU.length sorted > maxDistributionSize
-                    then importanceSample maxDistributionSize sorted
+                    then reduceSize maxDistributionSize sorted
                     else sorted
             normalized = normalize sampled
             values = VU.map fst normalized
@@ -65,26 +65,16 @@ normalize values =
     let !total = VU.foldl' (\x (_, y) -> x + y) 0.0 values
     in  VU.map (\(v, p) -> (v, p / total)) values
 
--- Keep high probability values
-importanceSample :: Int -> Vector (Double, Double) -> Vector (Double, Double)
-importanceSample targetSize vec
-    | VU.length vec <= targetSize = vec
-    | otherwise =
-        let sorted = runST $ do
-                mvec <- VU.thaw vec
-                VA.sortBy (\(_, p1) (_, p2) -> compare p2 p1) mvec
-                VU.unsafeFreeze mvec
-            (important, _) = VU.foldl' takeUntilThreshold (VU.empty, 0.0) sorted
-            sampled =
-                if VU.length important > targetSize
-                    then VU.take targetSize important
-                    else important
-        in  sampled
+-- Reduce size of distribution
+reduceSize :: Int -> Vector (Double, Double) -> Vector (Double, Double)
+reduceSize targetSize v
+    | VU.length v <= targetSize = v
+    | otherwise = VU.take targetSize (sort v)
   where
-    threshold = 0.95
-    takeUntilThreshold (acc, !cumProb) val@(_, p)
-        | cumProb >= threshold = (acc, cumProb)
-        | otherwise = (VU.snoc acc val, cumProb + p)
+    sort vec = runST $ do
+        mvec <- VU.thaw vec
+        VA.sortBy (\(_, p1) (_, p2) -> compare p2 p1) mvec
+        VU.unsafeFreeze mvec
 
 -- Binary search for index where value <= x
 binarySearchLE :: Double -> Vector Double -> Maybe Int
@@ -152,7 +142,7 @@ convolveSampled d1 d2 =
 sampleDist :: Int -> Dist -> Dist
 sampleDist n Dist{..} =
     let pairs = VU.zip values probabilities
-        sampled = importanceSample n pairs
+        sampled = reduceSize n pairs
         normalized = normalize sampled
         probs = VU.map snd normalized
     in  Dist
@@ -166,7 +156,7 @@ uniform' :: Double -> Double -> Dist
 uniform' a b = fromPairs $ VU.generate n (\i -> (a + (fromIntegral i) * stepSize, 1))
   where
     stepSize = 0.01
-    n = ceiling $ ((b - a) / stepSize) + 1
+    n = ceiling $ ((b - a) / stepSize)
 
 -- Get all unique values from both distributions
 unionValues :: Dist -> Dist -> Vector Double
