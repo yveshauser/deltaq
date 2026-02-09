@@ -11,6 +11,7 @@ module DeltaQ.Sampled
     ) where
 
 import Control.Monad.ST (runST)
+import qualified Data.Vector.Algorithms as VA
 import qualified Data.Vector.Algorithms.Intro as VA
 import Data.Vector.Unboxed (Vector)
 import qualified Data.Vector.Unboxed as VU
@@ -35,28 +36,33 @@ data Dist = Dist
 emptyDist :: Dist
 emptyDist = Dist VU.empty VU.empty VU.empty
 
+-- Sorting by values
+sort :: Vector (Double, Double) -> Vector (Double, Double)
+sort vec = runST $ do
+    mvec <- VU.thaw vec
+    VA.sortBy (\(v1, _) (v2, _) -> compare v1 v2) mvec
+    VU.unsafeFreeze mvec
+
 -- Create distribution from (value, probability) pairs
-fromPairs :: [(Double, Double)] -> Dist
+fromPairs :: Vector (Double, Double) -> Dist
 fromPairs pairs
-    | null pairs = emptyDist
+    | VU.null pairs = emptyDist
     | otherwise =
         let sorted = sort pairs
-            final =
+            sampled =
                 if VU.length sorted > maxDistributionSize
                     then importanceSample maxDistributionSize sorted
-                    else sorted
-            values = VU.map fst final
-            probabilities = VU.map snd final
+                    else normalize sorted
+            values = VU.map fst sampled
+            probabilities = VU.map snd sampled
             cumulative = VU.scanl1' (+) probabilities
         in  Dist{..}
-  where
-    sort :: [(Double, Double)] -> Vector (Double, Double)
-    sort xs = runST $ do
-        let vec = VU.fromList xs
-        mvec <- VU.thaw vec
-        VA.sortBy (\(v1, _) (v2, _) -> compare v1 v2) mvec
-        sorted <- VU.unsafeFreeze mvec
-        return sorted
+
+-- Normalize
+normalize :: Vector (Double, Double) -> Vector (Double, Double)
+normalize values =
+    let total = VU.sum $ VU.map snd values
+    in  VU.map (\(v, p) -> (v, p / total)) values
 
 -- Keep high probability values
 importanceSample :: Int -> Vector (Double, Double) -> Vector (Double, Double)
@@ -68,14 +74,16 @@ importanceSample targetSize vec
                 VA.sortBy (\(_, p1) (_, p2) -> compare p2 p1) mvec
                 VU.unsafeFreeze mvec
             (important, _) = VU.foldl' takeUntilThreshold (VU.empty, 0.0) sorted
-        in  if VU.length important > targetSize
-                then VU.take targetSize important
-                else important
+            sampled =
+                if VU.length important > targetSize
+                    then VU.take targetSize important
+                    else important
+        in  normalize sampled
   where
     threshold = 0.95
-    takeUntilThreshold (acc, !cumProb) point@(_, p)
+    takeUntilThreshold (acc, !cumProb) val@(_, p)
         | cumProb >= threshold = (acc, cumProb)
-        | otherwise = (VU.snoc acc point, cumProb + p)
+        | otherwise = (VU.snoc acc val, cumProb + p)
 
 -- Binary search for index where value <= x
 binarySearchLE :: Double -> Vector Double -> Maybe Int
@@ -122,14 +130,12 @@ convolve d1 d2 =
 -- Exact convolution
 convolveExact :: Dist -> Dist -> Dist
 convolveExact d1 d2 =
-    let products =
-            [ ( VU.unsafeIndex (values d1) i + VU.unsafeIndex (values d2) j
-              , VU.unsafeIndex (probabilities d1) i * VU.unsafeIndex (probabilities d2) j
-              )
-            | i <- [0 .. VU.length (values d1) - 1]
-            , j <- [0 .. VU.length (values d2) - 1]
-            ]
-    in  fromPairs products
+    fromPairs
+        $ VU.concatMap
+            ( \(i, p_i) ->
+                VU.map (\(j, p_j) -> (i + j, p_i * p_j)) (VU.zip (values d2) (probabilities d2))
+            )
+        $ VU.zip (values d1) (probabilities d1)
 
 -- Sampled convolution
 convolveSampled :: Dist -> Dist -> Dist
@@ -147,60 +153,49 @@ sampleDist n Dist{..} =
     let pairs = VU.zip values probabilities
         sampled = importanceSample n pairs
         probs = VU.map snd sampled
-        total = VU.sum probs
-        normalized = VU.map (/ total) probs
     in  Dist
             { values = VU.map fst sampled
-            , probabilities = normalized
-            , cumulative = VU.scanl1' (+) normalized
+            , probabilities = probs
+            , cumulative = VU.scanl1' (+) probs
             }
-
--- Uniform over a list of values
-fromList :: [Double] -> Dist
-fromList xs =
-    let !n = length xs
-        !p = 1.0 / fromIntegral n
-    in  fromPairs [(x, p) | x <- xs]
 
 -- Uniform over a range with constant step size
 uniform' :: Double -> Double -> Dist
-uniform' a b = fromList [a, (a + stepSize) .. b]
+uniform' a b = fromPairs $ VU.generate n (\i -> (a + (fromIntegral i) * stepSize, 1))
   where
     stepSize = 0.01
+    n = ceiling $ ((b - a) / stepSize) + 1
 
 -- Get all unique values from both distributions (sampled if too large)
-unionValues :: Dist -> Dist -> [Double]
-unionValues d1 d2 =
-    let v1 = VU.toList (values d1)
-        v2 = VU.toList (values d2)
-    in  mergeUnique v1 v2
+unionValues :: Dist -> Dist -> Vector Double
+unionValues d1 d2 = VA.nub $ sort' $ (values d1) VU.++ (values d2)
   where
-    mergeUnique [] ys = ys
-    mergeUnique xs [] = xs
-    mergeUnique (x : xs) (y : ys)
-        | x < y = x : mergeUnique xs (y : ys)
-        | x > y = y : mergeUnique (x : xs) ys
-        | otherwise = x : mergeUnique xs ys
+    sort' vec = runST $ do
+        mvec <- VU.thaw vec
+        VA.sort mvec
+        VU.unsafeFreeze mvec
 
 -- Build a distribution from the CDF
-fromCDF :: [(Double, Double)] -> Dist
-fromCDF [] = emptyDist
-fromCDF pairs@((v0, p0) : rest) =
-    let pmfPairs = (v0, p0) : zipWith (\(v, p) (_, p') -> (v, p - p')) rest pairs
-    in  fromPairs pmfPairs
+fromCDF :: Vector (Double, Double) -> Dist
+fromCDF vec | VU.null vec = emptyDist
+fromCDF vec
+    | otherwise =
+        let h = VU.head vec
+            r = VU.tail vec
+        in  fromPairs $ VU.cons h (VU.zipWith (\(v, p) (_, p') -> (v, p - p')) r vec)
 
 -- Last to finish: F₁(x)F₂(x)
 lastToFinish' :: Dist -> Dist -> Dist
 lastToFinish' d1 d2 =
     let vals = unionValues d1 d2
-        pairs = [(v, cdfAt v d1 * cdfAt v d2) | v <- vals]
+        pairs = VU.map (\v -> (v, cdfAt v d1 * cdfAt v d2)) vals
     in  fromCDF pairs
 
 -- First to finish: 1 - (1 - F₁(x))(1 - F₂(x))
 firstToFinish' :: Dist -> Dist -> Dist
 firstToFinish' d1 d2 =
     let vals = unionValues d1 d2
-        pairs = [(v, 1 - (1 - cdfAt v d1) * (1 - cdfAt v d2)) | v <- vals]
+        pairs = VU.map (\v -> (v, 1 - (1 - cdfAt v d1) * (1 - cdfAt v d2))) vals
     in  fromCDF pairs
 
 -- Mixture distribution
@@ -208,17 +203,9 @@ mixture :: Double -> Dist -> Dist -> Dist
 mixture w d1 d2
     | w < 0 || w > 1 = error "Weight must be between 0 and 1"
     | otherwise =
-        let n1 = VU.length (values d1)
-            n2 = VU.length (values d2)
-            pairs1 =
-                [ (VU.unsafeIndex (values d1) i, w * VU.unsafeIndex (probabilities d1) i)
-                | i <- [0 .. n1 - 1]
-                ]
-            pairs2 =
-                [ (VU.unsafeIndex (values d2) i, (1 - w) * VU.unsafeIndex (probabilities d2) i)
-                | i <- [0 .. n2 - 1]
-                ]
-        in  fromPairs (pairs1 ++ pairs2)
+        let p1 = VU.map (w *) (probabilities d1)
+            p2 = VU.map ((1 - w) *) (probabilities d2)
+        in  fromPairs $ (VU.zip (values d1) p1) VU.++ (VU.zip (values d2) p2)
 
 data DQ = DQ Dist
     deriving (Show)
@@ -228,7 +215,7 @@ instance Outcome DQ where
 
     never = DQ emptyDist
 
-    wait t = DQ (fromPairs [(t, 1.0)])
+    wait t = DQ (Dist (VU.singleton t) (VU.singleton 1.0) (VU.singleton 1.0))
 
     sequentially (DQ a) (DQ b) = DQ $ convolve a b
 
