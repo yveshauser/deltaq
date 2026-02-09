@@ -11,7 +11,6 @@ module DeltaQ.Sampled
     ) where
 
 import Control.Monad.ST (runST)
-import qualified Data.Vector.Algorithms as VA
 import qualified Data.Vector.Algorithms.Intro as VA
 import Data.Vector.Unboxed (Vector)
 import qualified Data.Vector.Unboxed as VU
@@ -22,6 +21,7 @@ import DeltaQ.Class
     , eventuallyFromMaybe
     )
 
+-- Max size of a distribution
 maxDistributionSize :: Int
 maxDistributionSize = 1000
 
@@ -33,16 +33,11 @@ data Dist = Dist
     }
     deriving (Show)
 
+-- Empty is an improper distribution
 emptyDist :: Dist
 emptyDist = Dist VU.empty VU.empty VU.empty
 
 -- Sorting by values
-sort :: Vector (Double, Double) -> Vector (Double, Double)
-sort vec = runST $ do
-    mvec <- VU.thaw vec
-    VA.sortBy (\(v1, _) (v2, _) -> compare v1 v2) mvec
-    VU.unsafeFreeze mvec
-
 -- Create distribution from (value, probability) pairs
 fromPairs :: Vector (Double, Double) -> Dist
 fromPairs pairs
@@ -52,16 +47,22 @@ fromPairs pairs
             sampled =
                 if VU.length sorted > maxDistributionSize
                     then importanceSample maxDistributionSize sorted
-                    else normalize sorted
-            values = VU.map fst sampled
-            probabilities = VU.map snd sampled
+                    else sorted
+            normalized = normalize sampled
+            values = VU.map fst normalized
+            probabilities = VU.map snd normalized
             cumulative = VU.scanl1' (+) probabilities
         in  Dist{..}
+  where
+    sort vec = runST $ do
+        mvec <- VU.thaw vec
+        VA.sortBy (\(v1, _) (v2, _) -> compare v1 v2) mvec
+        VU.unsafeFreeze mvec
 
 -- Normalize
 normalize :: Vector (Double, Double) -> Vector (Double, Double)
 normalize values =
-    let total = VU.sum $ VU.map snd values
+    let !total = VU.foldl' (\x (_, y) -> x + y) 0.0 values
     in  VU.map (\(v, p) -> (v, p / total)) values
 
 -- Keep high probability values
@@ -78,7 +79,7 @@ importanceSample targetSize vec
                 if VU.length important > targetSize
                     then VU.take targetSize important
                     else important
-        in  normalize sampled
+        in  sampled
   where
     threshold = 0.95
     takeUntilThreshold (acc, !cumProb) val@(_, p)
@@ -152,9 +153,10 @@ sampleDist :: Int -> Dist -> Dist
 sampleDist n Dist{..} =
     let pairs = VU.zip values probabilities
         sampled = importanceSample n pairs
-        probs = VU.map snd sampled
+        normalized = normalize sampled
+        probs = VU.map snd normalized
     in  Dist
-            { values = VU.map fst sampled
+            { values = VU.map fst normalized
             , probabilities = probs
             , cumulative = VU.scanl1' (+) probs
             }
@@ -166,14 +168,19 @@ uniform' a b = fromPairs $ VU.generate n (\i -> (a + (fromIntegral i) * stepSize
     stepSize = 0.01
     n = ceiling $ ((b - a) / stepSize) + 1
 
--- Get all unique values from both distributions (sampled if too large)
+-- Get all unique values from both distributions
 unionValues :: Dist -> Dist -> Vector Double
-unionValues d1 d2 = VA.nub $ sort' $ (values d1) VU.++ (values d2)
+unionValues d1 d2 =
+    let v1 = VU.toList (values d1)
+        v2 = VU.toList (values d2)
+    in  VU.fromList $ mergeUnique v1 v2
   where
-    sort' vec = runST $ do
-        mvec <- VU.thaw vec
-        VA.sort mvec
-        VU.unsafeFreeze mvec
+    mergeUnique [] ys = ys
+    mergeUnique xs [] = xs
+    mergeUnique (x : xs) (y : ys)
+        | x < y = x : mergeUnique xs (y : ys)
+        | x > y = y : mergeUnique (x : xs) ys
+        | otherwise = x : mergeUnique xs ys
 
 -- Build a distribution from the CDF
 fromCDF :: Vector (Double, Double) -> Dist
