@@ -37,7 +37,6 @@ data Dist = Dist
 emptyDist :: Dist
 emptyDist = Dist VU.empty VU.empty VU.empty
 
--- Sorting by values
 -- Create distribution from (value, probability) pairs
 fromPairs :: Vector (Double, Double) -> Dist
 fromPairs pairs
