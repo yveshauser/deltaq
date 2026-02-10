@@ -43,7 +43,7 @@ renderOutcomeDiagram = renderTiles . layout . termFromOutcome
 ------------------------------------------------------------------------------}
 type X = Int
 type Y = Int
-type Prob = Double
+type Prob = Rational
 type Description = String
 
 data Op
@@ -56,8 +56,8 @@ data Op
 data Op0
     = ONever
     | OWait0
-    | OWait Double
-    | OUniform Double Double
+    | OWait Rational
+    | OUniform Rational Rational
     deriving (Eq, Ord, Show)
 
 -- | Data attached to a 'Tile'.
@@ -86,7 +86,7 @@ renderTiles = frame 0.1 . position . map renderTile
 --
 -- TODO: This is approximate at the moment.
 -- Use SVGFonts to fix both the font and the sizing.
-textInWidth :: Double -> String -> Diagram SVG
+textInWidth :: Rational -> String -> Diagram SVG
 textInWidth _ s
     | length s > 4 = scale (4.5 / fromIntegral (length s)) $ text s
     | otherwise    = text s
@@ -147,12 +147,12 @@ renderOp0Symbol ONever    =
 renderOp0Symbol OWait0    = mempty
 renderOp0Symbol (OWait t) =
     textInWidth 1 $
-        "wait " <> printf "%.2f" (t :: Double)
+        "wait " <> printf "%.2f" (fromRational t :: Double)
 renderOp0Symbol (OUniform tl tr) =
     textInWidth 1 $
         "uniform "
-            <> printf "%.2f" (tl :: Double) <> " "
-            <> printf "%.2f" (tr :: Double)
+            <> printf "%.2f" (fromRational tl :: Double) <> " "
+            <> printf "%.2f" (fromRational tr :: Double)
 
 -- | Render the symbol that represents an operation with multiple arguments
 renderOpSymbol :: Op -> Diagram SVG
@@ -175,12 +175,12 @@ renderOpSymbol (OChoices _) =
         & strokeLine & translate (r2 (0,-0.1)))
 
 -- | Show a probability in scientific notation with two digits of precision.
-showProb :: Double -> String
+showProb :: Rational -> String
 showProb r
     | r >= 0.01 = printf "%.2f" x
     | otherwise = printf "%.2e\n" x
   where
-    x = r :: Double
+    x = fromRational r :: Double
 
 {-----------------------------------------------------------------------------
     Diagram Layout
