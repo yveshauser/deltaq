@@ -34,18 +34,38 @@ data Dist = Dist
     deriving (Eq)
 
 instance Show Dist where
-    show Dist{..} = "Dist"
+    show d = "Dist: " <> show (moments d)
+
+moments :: Dist -> (Rational, Rational)
+moments Dist{..} =
+    let m0 = length values
+        m1 = sum $ V.zipWith (*) values probabilities
+    in  (fromIntegral m0, m1)
 
 -- Empty is an improper distribution
 emptyDist :: Dist
 emptyDist = Dist V.empty V.empty V.empty
+
+-- Sort Vector by values
+sortValues :: Vector (Rational, Rational) -> Vector (Rational, Rational)
+sortValues vec = runST $ do
+    mvec <- V.thaw vec
+    VA.sortBy (\(v1, _) (v2, _) -> compare v1 v2) mvec
+    V.unsafeFreeze mvec
+
+-- Sort Vector by probabilities decreasing
+sortProbs :: Vector (Rational, Rational) -> Vector (Rational, Rational)
+sortProbs vec = runST $ do
+    mvec <- V.thaw vec
+    VA.sortBy (\(_, p1) (_, p2) -> compare p2 p1) mvec
+    V.unsafeFreeze mvec
 
 -- Create distribution from (value, probability) pairs
 fromPairs :: Vector (Rational, Rational) -> Dist
 fromPairs pairs
     | V.null pairs = emptyDist
     | otherwise =
-        let sorted = sort $ V.filter ((> 0) . snd) pairs
+        let sorted = sortValues $ V.filter ((> 0) . snd) pairs
             sampled =
                 if V.length sorted > maxDistributionSize
                     then reduceSize maxDistributionSize sorted
@@ -55,11 +75,6 @@ fromPairs pairs
             probabilities = V.map snd normalized
             cumulative = V.scanl1' (+) probabilities
         in  Dist{..}
-  where
-    sort vec = runST $ do
-        mvec <- V.thaw vec
-        VA.sortBy (\(v1, _) (v2, _) -> compare v1 v2) mvec
-        V.unsafeFreeze mvec
 
 -- Normalize
 normalize :: Vector (Rational, Rational) -> Vector (Rational, Rational)
@@ -71,12 +86,7 @@ normalize values =
 reduceSize :: Int -> Vector (Rational, Rational) -> Vector (Rational, Rational)
 reduceSize targetSize v
     | V.length v <= targetSize = v
-    | otherwise = V.take targetSize (sort v)
-  where
-    sort vec = runST $ do
-        mvec <- V.thaw vec
-        VA.sortBy (\(_, p1) (_, p2) -> compare p2 p1) mvec
-        V.unsafeFreeze mvec
+    | otherwise = sortValues $ V.take targetSize (sortProbs v)
 
 -- Binary search for index where value <= x
 binarySearchLE :: Rational -> Vector Rational -> Maybe Int
