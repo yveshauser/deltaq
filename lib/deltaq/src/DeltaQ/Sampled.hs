@@ -11,9 +11,9 @@ module DeltaQ.Sampled
     ) where
 
 import Control.Monad.ST (runST)
-import qualified Data.Vector.Algorithms.Intro as VA
 import Data.Vector (Vector)
 import qualified Data.Vector as V
+import qualified Data.Vector.Algorithms.Intro as VA
 import DeltaQ.Class
     ( DeltaQ (..)
     , Outcome (..)
@@ -34,7 +34,7 @@ data Dist = Dist
     deriving (Eq)
 
 instance Show Dist where
-  show Dist {..} = "Dist"
+    show Dist{..} = "Dist"
 
 -- Empty is an improper distribution
 emptyDist :: Dist
@@ -45,7 +45,7 @@ fromPairs :: Vector (Rational, Rational) -> Dist
 fromPairs pairs
     | V.null pairs = emptyDist
     | otherwise =
-        let sorted = sort pairs
+        let sorted = sort $ V.filter ((> 0) . snd) pairs
             sampled =
                 if V.length sorted > maxDistributionSize
                     then reduceSize maxDistributionSize sorted
@@ -64,7 +64,7 @@ fromPairs pairs
 -- Normalize
 normalize :: Vector (Rational, Rational) -> Vector (Rational, Rational)
 normalize values =
-    let !total = V.foldl' (\x (_, y) -> x + y) 0.0 values
+    let !total = V.foldl' (\x (_, y) -> x + y) 0 values
     in  V.map (\(v, p) -> (v, p / total)) values
 
 -- Reduce size of distribution
@@ -100,7 +100,7 @@ binarySearchLE x vec
 cdfAt :: Rational -> Dist -> Rational
 cdfAt x Dist{..} =
     case binarySearchLE x values of
-        Nothing -> 0.0
+        Nothing -> 0
         Just idx -> V.unsafeIndex cumulative idx
 
 -- Quantile function
@@ -116,9 +116,12 @@ convolve d1 d2 =
     let n1 = V.length (values d1)
         n2 = V.length (values d2)
         totalPoints = n1 * n2
-    in  if totalPoints == 0 then emptyDist
-        else if totalPoints <= maxDistributionSize then convolveExact d1 d2
-        else convolveSampled d1 d2
+    in  if totalPoints == 0
+            then emptyDist
+            else
+                if totalPoints <= maxDistributionSize
+                    then convolveExact d1 d2
+                    else convolveSampled d1 d2
 
 -- Exact convolution
 convolveExact :: Dist -> Dist -> Dist
@@ -156,8 +159,10 @@ sampleDist n Dist{..} =
 -- Uniform over a range with constant step size
 uniform' :: Rational -> Rational -> Dist
 uniform' a b | a >= b = emptyDist
-uniform' a b | otherwise = fromPairs $ 
-  V.generate n (\i -> (a + (fromIntegral i) * stepSize, 1))
+uniform' a b
+    | otherwise =
+        fromPairs
+            $ V.generate n (\i -> (a + (fromIntegral i) * stepSize, 1))
   where
     n = 100
     stepSize = (b - a) / fromIntegral n
@@ -216,7 +221,7 @@ instance Outcome DQ where
 
     never = DQ emptyDist
 
-    wait t = DQ (Dist (V.singleton t) (V.singleton 1.0) (V.singleton 1.0))
+    wait t = DQ (Dist (V.singleton t) (V.singleton 1) (V.singleton 1))
 
     sequentially (DQ a) (DQ b) = DQ $ convolve a b
 
@@ -236,8 +241,8 @@ instance DeltaQ DQ where
 
     failure (DQ (Dist _ _ cum)) =
         if V.null cum
-            then 1.0
-            else 1.0 - V.last cum
+            then 1
+            else 1 - V.last cum
 
     quantile (DQ l) p =
         eventuallyFromMaybe
