@@ -37,12 +37,26 @@ data Dist = Dist
 emptyDist :: Dist
 emptyDist = Dist VU.empty VU.empty VU.empty
 
+-- Sort values
+sortValues :: Vector (Double, Double) -> Vector (Double, Double)
+sortValues vec = runST $ do
+    mvec <- VU.thaw vec
+    VA.sortBy (\(v1, _) (v2, _) -> compare v1 v2) mvec
+    VU.unsafeFreeze mvec
+
+-- Sort Vector by probabilities decreasing
+sortProbs :: Vector (Double, Double) -> Vector (Double, Double)
+sortProbs vec = runST $ do
+    mvec <- VU.thaw vec
+    VA.sortBy (\(_, p1) (_, p2) -> compare p2 p1) mvec
+    VU.unsafeFreeze mvec
+
 -- Create distribution from (value, probability) pairs
 fromPairs :: Vector (Double, Double) -> Dist
 fromPairs pairs
     | VU.null pairs = emptyDist
     | otherwise =
-        let sorted = sort pairs
+        let sorted = sortValues $ VU.filter ((> 0) . snd) pairs
             sampled =
                 if VU.length sorted > maxDistributionSize
                     then reduceSize maxDistributionSize sorted
@@ -52,11 +66,6 @@ fromPairs pairs
             probabilities = VU.map snd normalized
             cumulative = VU.scanl1' (+) probabilities
         in  Dist{..}
-  where
-    sort vec = runST $ do
-        mvec <- VU.thaw vec
-        VA.sortBy (\(v1, _) (v2, _) -> compare v1 v2) mvec
-        VU.unsafeFreeze mvec
 
 -- Normalize
 normalize :: Vector (Double, Double) -> Vector (Double, Double)
@@ -68,12 +77,7 @@ normalize values =
 reduceSize :: Int -> Vector (Double, Double) -> Vector (Double, Double)
 reduceSize targetSize v
     | VU.length v <= targetSize = v
-    | otherwise = VU.take targetSize (sort v)
-  where
-    sort vec = runST $ do
-        mvec <- VU.thaw vec
-        VA.sortBy (\(_, p1) (_, p2) -> compare p2 p1) mvec
-        VU.unsafeFreeze mvec
+    | otherwise = sortValues $ VU.take targetSize (sortProbs v)
 
 -- Binary search for index where value <= x
 binarySearchLE :: Double -> Vector Double -> Maybe Int
@@ -102,6 +106,7 @@ cdfAt x Dist{..} =
 
 -- Quantile function
 quantile' :: Double -> Dist -> Maybe Double
+quantile' 0 _ = Just 0
 quantile' q Dist{..} =
     case VU.findIndex (>= q) cumulative of
         Nothing -> Nothing
@@ -154,8 +159,8 @@ sampleDist n Dist{..} =
 uniform' :: Double -> Double -> Dist
 uniform' a b = fromPairs $ VU.generate n (\i -> (a + (fromIntegral i) * stepSize, 1))
   where
-    stepSize = 0.01
-    n = ceiling $ ((b - a) / stepSize)
+    n = 100
+    stepSize = (b - a) / fromIntegral n
 
 -- Get all unique values from both distributions
 unionValues :: Dist -> Dist -> Vector Double
@@ -229,19 +234,19 @@ instance DeltaQ DQ where
 
     successWithin (DQ l) d = cdfAt d l
 
-    failure (DQ (Dist _ _ cum)) =
-        if VU.null cum
+    failure (DQ Dist{..}) =
+        if VU.null cumulative
             then 1.0
-            else 1.0 - VU.last cum
+            else 1.0 - VU.last cumulative
 
     quantile (DQ l) p =
         eventuallyFromMaybe
             $ quantile' p l
 
-    earliest (DQ (Dist vals _ _)) =
+    earliest (DQ Dist{..}) =
         eventuallyFromMaybe
-            $ if VU.null vals then Nothing else Just (VU.head vals)
+            $ if VU.null values then Nothing else Just (VU.head values)
 
-    deadline (DQ (Dist vals _ _)) =
+    deadline (DQ Dist{..}) =
         eventuallyFromMaybe
-            $ if VU.null vals then Nothing else Just (VU.last vals)
+            $ if VU.null values then Nothing else Just (VU.last values)
